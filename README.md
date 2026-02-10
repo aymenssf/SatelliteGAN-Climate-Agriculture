@@ -126,6 +126,70 @@ pip install -r requirements.txt
 
 Un GPU est fortement recommande. L'execution CPU est possible mais tres lente.
 
+## Sauvegarde Google Drive
+
+Le projet separe strictement le **code source** (GitHub) des **outputs** (Google Drive).
+Les notebooks restent versionnes sur GitHub, tandis que les checkpoints, images generees,
+historique des pertes et metriques sont sauvegardes dans Drive pour survivre aux
+deconnexions Colab.
+
+### Structure des outputs dans Drive
+
+```
+Google Drive/MyDrive/SatelliteGAN-Outputs/
+|
++-- data/
+|   +-- eurosat/                    # Cache du dataset EuroSAT
+|   +-- processed_drought/          # Images de secheresse pre-traitees
+|
++-- cyclegan/
+|   +-- checkpoints/                # epoch_10.pth, epoch_20.pth, ..., final.pth
+|   +-- generated_images/           # Images A->B et B->A a chaque sauvegarde
+|   +-- losses/                     # loss_history.json
+|
++-- diffusion/
+|   +-- checkpoints/                # epoch_25.pth, epoch_50.pth, ..., final.pth
+|   +-- samples/                    # Images generees a chaque sauvegarde
+|   +-- losses/                     # loss_history.json
+|
++-- evaluation/
+    +-- metrics/                    # results.json (SSIM, PSNR, FID)
+    +-- comparisons/                # Comparaisons cote-a-cote
+    +-- figures/                    # Graphiques et visualisations
+```
+
+### Auto-resume
+
+Si l'entrainement est interrompu (deconnexion Colab, timeout), il suffit de
+relancer la cellule d'entrainement. Le trainer detecte automatiquement le
+dernier checkpoint dans Drive et reprend depuis cette epoch.
+
+Pour forcer la reprise depuis un checkpoint specifique :
+```python
+# CycleGAN
+history = trainer.train(train_loader, n_epochs=100,
+                        resume_from=f"{DRIVE_OUTPUTS}/cyclegan/checkpoints/epoch_40.pth")
+
+# DDPM
+history = trainer.train(train_loader, n_epochs=150,
+                        resume_from=f"{DRIVE_OUTPUTS}/diffusion/checkpoints/epoch_50.pth")
+```
+
+### Fonctionnement
+
+Chaque notebook commence par une cellule de setup qui :
+1. Monte Google Drive
+2. Cree la structure de dossiers si necessaire
+3. Clone le depot GitHub (code source)
+4. Installe les dependances
+
+Les classes `CycleGANTrainer` et `DiffusionTrainer` acceptent un parametre `save_dir`
+qui redirige toutes les sauvegardes vers Drive au lieu du stockage local ephemere :
+```python
+trainer = CycleGANTrainer(save_dir=f"{DRIVE_OUTPUTS}/cyclegan")
+trainer = DiffusionTrainer(save_dir=f"{DRIVE_OUTPUTS}/diffusion")
+```
+
 ## Resultats attendus
 
 - Le CycleGAN produit des transformations visuellement coherentes : les parcelles

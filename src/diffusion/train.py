@@ -11,12 +11,20 @@ L'entrainement est plus simple que pour le CycleGAN :
 
 On utilise EMA (Exponential Moving Average) des poids pour
 ameliorer la qualite du sampling (convention standard en diffusion).
+
+Sauvegarde Google Drive :
+  Si save_dir est fourni, les checkpoints, samples generes et historique
+  des pertes sont sauvegardes automatiquement dans Drive.
+  L'entrainement reprend automatiquement depuis le dernier checkpoint.
 """
 
 import os
+import json
+import glob
 import copy
 import torch
 import torch.optim as optim
+from torchvision.utils import save_image
 from tqdm import tqdm
 
 from src.config import DEVICE, DIFFUSION, DIFFUSION_CKPT_DIR
@@ -62,14 +70,42 @@ class DiffusionTrainer:
     """
     Classe d'entrainement pour le DDPM.
 
-    Usage :
+    Usage basique (sauvegarde locale) :
         trainer = DiffusionTrainer()
+        trainer.train(dataloader)
+
+    Usage avec Google Drive (sauvegarde persistante + auto-resume) :
+        trainer = DiffusionTrainer(save_dir="/content/drive/MyDrive/SatelliteGAN-Outputs/diffusion")
         trainer.train(dataloader)
     """
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, save_dir=None):
+        """
+        Args:
+            config: dict de configuration (defaut: DIFFUSION de config.py)
+            save_dir: chemin Drive pour sauvegarder checkpoints/samples/pertes.
+                      Si None, sauvegarde dans outputs/ (local).
+                      Si fourni, cree la structure :
+                        save_dir/checkpoints/
+                        save_dir/samples/
+                        save_dir/losses/
+        """
         cfg = config or DIFFUSION
         self.cfg = cfg
+        self.save_dir = save_dir
+
+        # Configurer les chemins de sauvegarde
+        if save_dir:
+            self.checkpoint_dir = os.path.join(save_dir, 'checkpoints')
+            self.samples_dir = os.path.join(save_dir, 'samples')
+            self.losses_dir = os.path.join(save_dir, 'losses')
+            os.makedirs(self.checkpoint_dir, exist_ok=True)
+            os.makedirs(self.samples_dir, exist_ok=True)
+            os.makedirs(self.losses_dir, exist_ok=True)
+        else:
+            self.checkpoint_dir = DIFFUSION_CKPT_DIR
+            self.samples_dir = None
+            self.losses_dir = None
 
         # Modele DDPM
         self.model = DDPM(config=cfg).to(DEVICE)
@@ -86,19 +122,64 @@ class DiffusionTrainer:
         # Historique
         self.history = {'loss': []}
 
-    def train(self, dataloader, n_epochs=None, start_epoch=0):
+    def _find_latest_checkpoint(self):
+        """
+        Cherche le dernier checkpoint dans checkpoint_dir.
+        Retourne le chemin du fichier ou None si aucun checkpoint.
+        """
+        pattern = os.path.join(self.checkpoint_dir, 'epoch_*.pth')
+        checkpoints = glob.glob(pattern)
+        if not checkpoints:
+            return None
+
+        def _epoch_num(path):
+            basename = os.path.basename(path)
+            try:
+                return int(basename.replace('epoch_', '').replace('.pth', ''))
+            except ValueError:
+                return -1
+
+        checkpoints.sort(key=_epoch_num)
+        return checkpoints[-1]
+
+    def train(self, dataloader, n_epochs=None, resume_from=None):
         """
         Boucle d'entrainement.
 
+        Si save_dir a ete fourni a l'initialisation, les checkpoints,
+        samples generes et historique des pertes sont sauvegardes
+        automatiquement dans Drive.
+
+        Si resume_from est fourni, reprend depuis ce checkpoint.
+        Sinon, si save_dir contient des checkpoints, reprend
+        automatiquement depuis le plus recent (auto-resume).
+
         Args:
-            dataloader: DataLoader d'images (chaque batch = (images, labels))
+            dataloader: DataLoader d'images (chaque batch = (images, labels) ou (images,))
             n_epochs: nombre d'epochs
-            start_epoch: epoch de depart
+            resume_from: chemin .pth pour reprendre l'entrainement.
+                         Si None ET save_dir contient des checkpoints,
+                         reprend automatiquement depuis le dernier.
 
         Returns:
             historique des pertes
         """
         n_epochs = n_epochs or self.cfg['n_epochs']
+        start_epoch = 0
+
+        # -- Auto-resume : chercher le dernier checkpoint --
+        ckpt_path = resume_from
+        if ckpt_path is None and self.save_dir:
+            ckpt_path = self._find_latest_checkpoint()
+
+        if ckpt_path and os.path.exists(ckpt_path):
+            start_epoch = self.load_checkpoint(ckpt_path)
+            print(f"Reprise de l'entrainement a l'epoch {start_epoch}/{n_epochs}")
+        else:
+            if self.save_dir:
+                print(f"Sauvegarde activee : {self.save_dir}")
+            print(f"Entrainement depuis le debut (epoch 1/{n_epochs})")
+
         self.model.train()
 
         for epoch in range(start_epoch, n_epochs):
@@ -139,13 +220,19 @@ class DiffusionTrainer:
             # Sauvegarde periodique
             if (epoch + 1) % self.cfg['save_every'] == 0:
                 self.save_checkpoint(epoch + 1)
+                self._save_samples(epoch + 1)
+                self._save_loss_history()
+
+        # Sauvegarde finale
+        self._save_final_model()
+        self._save_loss_history()
 
         return self.history
 
     def save_checkpoint(self, epoch):
-        """Sauvegarde le modele et l'optimiseur."""
-        os.makedirs(DIFFUSION_CKPT_DIR, exist_ok=True)
-        path = os.path.join(DIFFUSION_CKPT_DIR, f'ddpm_epoch_{epoch}.pth')
+        """Sauvegarde le modele, EMA, optimiseur et historique."""
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        path = os.path.join(self.checkpoint_dir, f'epoch_{epoch}.pth')
         torch.save({
             'epoch': epoch,
             'model': self.model.state_dict(),
@@ -156,7 +243,12 @@ class DiffusionTrainer:
         print(f"Checkpoint sauvegarde : {path}")
 
     def load_checkpoint(self, path):
-        """Charge un checkpoint."""
+        """
+        Charge un checkpoint pour reprendre l'entrainement ou l'inference.
+
+        Restaure le modele, EMA, optimiseur et historique des pertes.
+        Retourne le numero d'epoch (= epoch de depart pour reprendre).
+        """
         ckpt = torch.load(path, map_location=DEVICE)
         self.model.load_state_dict(ckpt['model'])
         if 'ema' in ckpt:
@@ -167,6 +259,40 @@ class DiffusionTrainer:
             self.history = ckpt['history']
         print(f"Checkpoint charge : epoch {ckpt['epoch']}")
         return ckpt['epoch']
+
+    def _save_samples(self, epoch, n_samples=16):
+        """Genere et sauvegarde des images exemples pendant l'entrainement."""
+        if not self.samples_dir:
+            return
+
+        try:
+            self.ema.shadow.eval()
+            with torch.no_grad():
+                samples = self.ema.shadow.sample_fast(n_samples, 64, DEVICE)
+
+            path = os.path.join(self.samples_dir, f'epoch_{epoch}.png')
+            save_image(samples, path, nrow=4, normalize=True)
+            print(f"Samples sauvegardes : {path}")
+        except Exception as e:
+            print(f"Avertissement : sauvegarde samples echouee ({e})")
+
+    def _save_loss_history(self):
+        """Sauvegarde l'historique des pertes en JSON."""
+        if not self.losses_dir:
+            return
+        path = os.path.join(self.losses_dir, 'loss_history.json')
+        with open(path, 'w') as f:
+            json.dump(self.history, f, indent=2)
+
+    def _save_final_model(self):
+        """Sauvegarde le modele final (poids + EMA, sans optimiseur)."""
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        path = os.path.join(self.checkpoint_dir, 'final.pth')
+        torch.save({
+            'model': self.model.state_dict(),
+            'ema': self.ema.shadow.state_dict(),
+        }, path)
+        print(f"Modele final sauvegarde : {path}")
 
     @torch.no_grad()
     def generate(self, n_samples=16, image_size=64, use_ema=True, fast=True):
