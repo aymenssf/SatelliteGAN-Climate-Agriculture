@@ -257,8 +257,12 @@ class DiffusionTrainer:
             self.optimizer.load_state_dict(ckpt['optimizer'])
         if 'history' in ckpt:
             self.history = ckpt['history']
-        print(f"Checkpoint charge : epoch {ckpt['epoch']}")
-        return ckpt['epoch']
+        try:
+            epoch = ckpt['epoch']
+        except (KeyError, TypeError):
+            epoch = 0
+        print(f"Checkpoint charge : epoch {epoch}")
+        return epoch
 
     def _save_samples(self, epoch, n_samples=16):
         """Genere et sauvegarde des images exemples pendant l'entrainement."""
