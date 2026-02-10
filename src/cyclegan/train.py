@@ -346,7 +346,10 @@ class CycleGANTrainer:
             self.opt_D_B.load_state_dict(ckpt['opt_D_B'])
         if 'loss_history' in ckpt:
             self.history = ckpt['loss_history']
-        epoch = ckpt.get('epoch', 0)
+        try:
+            epoch = ckpt['epoch']
+        except (KeyError, TypeError):
+            epoch = 0
         print(f"Checkpoint charge : epoch {epoch}")
         return epoch
 
