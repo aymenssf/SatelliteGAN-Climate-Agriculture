@@ -346,8 +346,9 @@ class CycleGANTrainer:
             self.opt_D_B.load_state_dict(ckpt['opt_D_B'])
         if 'loss_history' in ckpt:
             self.history = ckpt['loss_history']
-        print(f"Checkpoint charge : epoch {ckpt['epoch']}")
-        return ckpt['epoch']
+        epoch = ckpt.get('epoch', 0)
+        print(f"Checkpoint charge : epoch {epoch}")
+        return epoch
 
     def _save_sample_images(self, dataloader, epoch):
         """Sauvegarde des images exemples pendant l'entrainement."""
