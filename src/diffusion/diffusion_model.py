@@ -18,6 +18,7 @@ Reference : Ho, J., Jain, A., & Abbeel, P. (2020)
 
 import torch
 import torch.nn as nn
+import numpy as np
 from tqdm import tqdm
 
 from src.diffusion.unet import UNet
@@ -121,11 +122,10 @@ class DDPM(nn.Module):
     @torch.no_grad()
     def sample_fast(self, n_samples, image_size=64, device=None):
         """
-        Sampling accelere avec moins de pas.
+        Sampling accelere avec DDIM (deterministe, meilleure qualite).
 
-        Au lieu de faire les 1000 pas, on en fait seulement
-        sampling_steps (ex: 50) en sautant des pas regulierement.
-        Qualite legerement inferieure mais beaucoup plus rapide.
+        Utilise DDIM au lieu de DDPM pour un sampling rapide :
+        100 steps DDIM ~ 1000 steps DDPM en qualite.
 
         Args:
             n_samples: nombre d'images a generer
@@ -135,18 +135,44 @@ class DDPM(nn.Module):
         Returns:
             images: tensor (n_samples, 3, H, W) dans [-1, 1]
         """
+        return self.sample_ddim(n_samples, image_size, device,
+                                num_steps=self.sampling_steps, eta=0.0)
+
+    @torch.no_grad()
+    def sample_ddim(self, n_samples, image_size=64, device=None,
+                    num_steps=100, eta=0.0):
+        """
+        Sampling DDIM (Song et al., 2021).
+
+        DDIM est deterministe (eta=0) et produit des images de meilleure
+        qualite que le DDPM stochastique a nombre de pas egal.
+
+        Args:
+            n_samples: nombre d'images a generer
+            image_size: taille spatiale des images
+            device: device
+            num_steps: nombre de pas de sampling (100 ~ 1000 DDPM)
+            eta: stochasticite (0=deterministe, 1=equivalent DDPM)
+
+        Returns:
+            images: tensor (n_samples, 3, H, W) dans [-1, 1]
+        """
         device = device or DEVICE
 
-        # Sous-echantillonner les timesteps
-        step_size = self.n_timesteps // self.sampling_steps
-        timesteps = list(range(0, self.n_timesteps, step_size))[::-1]
+        # Sous-echantillonnage uniforme des timesteps
+        timesteps = np.linspace(0, self.n_timesteps - 1, num_steps, dtype=int)[::-1]
+        timesteps = list(timesteps)
 
         x = torch.randn(n_samples, 3, image_size, image_size, device=device)
 
-        for t in tqdm(timesteps, desc="Fast sampling"):
+        for i, t in enumerate(tqdm(timesteps, desc="DDIM sampling")):
             t_batch = torch.full((n_samples,), t, device=device, dtype=torch.long)
             predicted_noise = self.unet(x, t_batch)
-            x = self.scheduler.reverse_step(x, t, predicted_noise)
+
+            # Timestep precedent (-1 si dernier pas)
+            t_prev = timesteps[i + 1] if i + 1 < len(timesteps) else -1
+
+            x = self.scheduler.ddim_reverse_step(x, t, t_prev, predicted_noise, eta=eta)
 
         x = x.clamp(-1, 1)
         return x
