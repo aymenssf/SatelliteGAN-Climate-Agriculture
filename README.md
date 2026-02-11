@@ -109,7 +109,7 @@ climate-agriculture-gan/
 
 2. Ouvrir les notebooks dans l'ordre :
    - `01_data_exploration.ipynb` -- exploration des donnees, selection des classes
-   - `02_cyclegan_training.ipynb` -- entrainement du CycleGAN (~3-5h sur T4)
+   - `02_cyclegan_training.ipynb` -- entrainement du CycleGAN (~6-8h sur T4)
    - `03_diffusion_training.ipynb` -- entrainement du modele de diffusion (~4-6h sur T4)
    - `04_evaluation_results.ipynb` -- evaluation et visualisations finales
 
