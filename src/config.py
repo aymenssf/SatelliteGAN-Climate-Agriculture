@@ -145,10 +145,11 @@ DIFFUSION = {
 # ------------------------------------------------------------------
 EVAL = {
     # Nombre d'images a generer pour l'evaluation.
-    'n_generated': 200,
+    # 1000 minimum pour un FID fiable (N > D avec InceptionV3 2048-D).
+    'n_generated': 1000,
 
     # Nombre d'images pour le calcul FID (si utilise).
-    'fid_n_samples': 200,
+    'fid_n_samples': 1000,
 }
 
 # ------------------------------------------------------------------
