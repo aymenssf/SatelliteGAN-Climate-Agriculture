@@ -90,7 +90,7 @@ class LinearNoiseScheduler(nn.Module):
 
     def reverse_step(self, x_t, t, predicted_noise):
         """
-        Un pas du processus reverse (sampling).
+        Un pas du processus reverse (sampling DDPM).
 
         p(x_{t-1} | x_t) = N(mu_theta, sigma_t^2 * I)
 
@@ -118,3 +118,48 @@ class LinearNoiseScheduler(nn.Module):
             return mean + sigma * noise
         else:
             return mean
+
+    def ddim_reverse_step(self, x_t, t, t_prev, predicted_noise, eta=0.0):
+        """
+        Un pas du processus reverse DDIM (Song et al., 2021).
+
+        DDIM permet un sampling deterministe (eta=0) ou stochastique (eta=1).
+        Avec eta=0, le sampling est reproductible et produit moins de bruit
+        qu'un DDPM stochastique a nombre de pas egal.
+
+        Args:
+            x_t: image bruitee au pas t (B, C, H, W)
+            t: timestep actuel (entier)
+            t_prev: timestep precedent (entier, peut etre non-consecutif)
+            predicted_noise: bruit predit par le U-Net
+            eta: controle la stochasticite (0=deterministe, 1=DDPM)
+
+        Returns:
+            x_{t_prev}: image debruitee au timestep precedent
+        """
+        alpha_bar_t = self.alpha_bar[t]
+        alpha_bar_prev = self.alpha_bar[t_prev] if t_prev >= 0 else torch.tensor(1.0, device=x_t.device)
+
+        # Prediction de x_0 a partir de x_t et du bruit predit
+        sqrt_alpha_bar_t = torch.sqrt(alpha_bar_t)
+        sqrt_one_minus_alpha_bar_t = torch.sqrt(1.0 - alpha_bar_t)
+        pred_x0 = (x_t - sqrt_one_minus_alpha_bar_t * predicted_noise) / sqrt_alpha_bar_t
+        pred_x0 = torch.clamp(pred_x0, -1, 1)
+
+        # Variance conditionnelle (sigma_t)
+        sigma_t = 0.0
+        if eta > 0 and t_prev >= 0:
+            sigma_t = eta * torch.sqrt(
+                (1.0 - alpha_bar_prev) / (1.0 - alpha_bar_t)
+                * (1.0 - alpha_bar_t / alpha_bar_prev)
+            )
+
+        # Direction pointant vers x_t
+        dir_xt = torch.sqrt(1.0 - alpha_bar_prev - sigma_t ** 2) * predicted_noise
+
+        # Bruit aleatoire (0 si eta=0 ou dernier pas)
+        noise = torch.randn_like(x_t) if sigma_t > 0 else 0.0
+
+        # Equation DDIM
+        x_prev = torch.sqrt(alpha_bar_prev) * pred_x0 + dir_xt + sigma_t * noise
+        return x_prev
