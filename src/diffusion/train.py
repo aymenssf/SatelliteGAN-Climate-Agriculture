@@ -27,7 +27,7 @@ import torch.optim as optim
 from torchvision.utils import save_image
 from tqdm import tqdm
 
-from src.config import DEVICE, DIFFUSION, DIFFUSION_CKPT_DIR
+from src.config import DEVICE, DIFFUSION, DIFFUSION_CKPT_DIR, IMAGE_SIZE
 from src.diffusion.diffusion_model import DDPM
 
 
@@ -248,13 +248,27 @@ class DiffusionTrainer:
 
         Restaure le modele, EMA, optimiseur et historique des pertes.
         Retourne le numero d'epoch (= epoch de depart pour reprendre).
+
+        Si l'architecture a change (ex: passage de 64x64 a 128x128),
+        ignore le checkpoint et repart de zero.
         """
         ckpt = torch.load(path, map_location=DEVICE)
-        self.model.load_state_dict(ckpt['model'])
+        try:
+            self.model.load_state_dict(ckpt['model'])
+        except RuntimeError as e:
+            print(f"Architecture incompatible avec le checkpoint ({e})")
+            print("Demarrage depuis zero avec la nouvelle architecture.")
+            return 0
         if 'ema' in ckpt:
-            self.ema.shadow.load_state_dict(ckpt['ema'])
+            try:
+                self.ema.shadow.load_state_dict(ckpt['ema'])
+            except RuntimeError:
+                self.ema = EMA(self.model)
         if 'optimizer' in ckpt:
-            self.optimizer.load_state_dict(ckpt['optimizer'])
+            try:
+                self.optimizer.load_state_dict(ckpt['optimizer'])
+            except (RuntimeError, ValueError):
+                pass
         if 'history' in ckpt:
             self.history = ckpt['history']
         try:
@@ -272,7 +286,7 @@ class DiffusionTrainer:
         try:
             self.ema.shadow.eval()
             with torch.no_grad():
-                samples = self.ema.shadow.sample_fast(n_samples, 64, DEVICE)
+                samples = self.ema.shadow.sample_fast(n_samples, IMAGE_SIZE, DEVICE)
 
             path = os.path.join(self.samples_dir, f'epoch_{epoch}.png')
             save_image(samples, path, nrow=4, normalize=True)
@@ -299,19 +313,22 @@ class DiffusionTrainer:
         print(f"Modele final sauvegarde : {path}")
 
     @torch.no_grad()
-    def generate(self, n_samples=16, image_size=64, use_ema=True, fast=True):
+    def generate(self, n_samples=16, image_size=None, use_ema=True, fast=True):
         """
         Genere des images avec le modele entraine.
 
         Args:
             n_samples: nombre d'images a generer
-            image_size: taille des images
+            image_size: taille des images (defaut: IMAGE_SIZE de config)
             use_ema: utiliser les poids EMA (recommande)
-            fast: utiliser le sampling accelere
+            fast: utiliser le sampling DDIM accelere
 
         Returns:
             tensor (n_samples, 3, H, W) dans [-1, 1]
         """
+        if image_size is None:
+            image_size = IMAGE_SIZE
+
         model = self.ema.shadow if use_ema else self.model
         model.eval()
 
