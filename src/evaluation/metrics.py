@@ -106,13 +106,10 @@ def compute_fid(real_features, generated_features):
     FID = ||mu_r - mu_g||^2 + Tr(Sigma_r + Sigma_g - 2 * sqrt(Sigma_r * Sigma_g))
 
     Mesure la distance entre les distributions gaussiennes ajustees
-    aux features d'un reseau pre-entraine (typiquement InceptionV3).
+    aux features d'un reseau pre-entraine (InceptionV3).
 
     Plus le FID est bas, plus les images generees ressemblent aux vraies.
     Un FID de 0 signifie des distributions identiques.
-
-    Pour un petit projet, on calcule les features avec un reseau plus leger
-    (pas besoin d'InceptionV3 complet).
 
     Args:
         real_features: array (N, D) de features pour les images reelles
@@ -133,12 +130,17 @@ def compute_fid(real_features, generated_features):
     sigma_r = np.cov(real_features, rowvar=False)
     sigma_g = np.cov(generated_features, rowvar=False)
 
+    # Regularisation pour eviter les matrices singulieres
+    # (necessaire quand N < D, standard dans les implementations FID)
+    eps = 1e-6
+    sigma_r += eps * np.eye(sigma_r.shape[0])
+    sigma_g += eps * np.eye(sigma_g.shape[0])
+
     # Distance entre les moyennes
     diff = mu_r - mu_g
     mean_diff = diff @ diff
 
     # Racine carree du produit des covariances
-    # On utilise sqrtm de scipy pour la matrice racine carree
     covmean, _ = linalg.sqrtm(sigma_r @ sigma_g, disp=False)
 
     # Gestion des valeurs imaginaires dues a l'imprecision numerique
@@ -150,38 +152,47 @@ def compute_fid(real_features, generated_features):
     return float(fid)
 
 
-class SimpleFeatureExtractor(nn.Module):
+class InceptionFeatureExtractor(nn.Module):
     """
-    Extracteur de features simple pour le calcul du FID.
+    Extracteur de features InceptionV3 pre-entraine pour le calcul du FID.
 
-    Utilise quelques couches convolutives pour extraire des features
-    a partir des images. On n'utilise pas InceptionV3 complet pour
-    rester leger et compatible Colab.
-
-    Pour un FID plus fiable, on pourrait utiliser torchvision.models.inception_v3
-    pre-entraine, mais c'est plus lourd en memoire.
+    Utilise InceptionV3 (Szegedy et al., 2016) pre-entraine sur ImageNet,
+    le standard pour le calcul du FID (Heusel et al., 2017).
+    Les images sont redimensionnees a 299x299 et normalisees selon ImageNet.
+    La couche de classification est remplacee par Identity pour obtenir
+    le vecteur de features 2048-D du pool layer.
     """
 
     def __init__(self):
         super().__init__()
-        # Architecture simple : 3 couches conv + adaptive pool
-        self.features = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool2d((1, 1)),
+        from torchvision import models
+        inception = models.inception_v3(weights='DEFAULT')
+        inception.fc = nn.Identity()
+        inception.eval()
+        self.model = inception
+        # Normalisation ImageNet
+        self.register_buffer(
+            'mean', torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+        )
+        self.register_buffer(
+            'std', torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
         )
 
     def forward(self, x):
-        """Extrait un vecteur de features pour chaque image."""
-        return self.features(x).flatten(1)
+        # [-1, 1] -> [0, 1] -> normalisation ImageNet
+        x = (x + 1) / 2
+        x = (x - self.mean) / self.std
+        # Resize 299x299 (requis par InceptionV3)
+        x = F.interpolate(x, size=(299, 299), mode='bilinear', align_corners=False)
+        return self.model(x)
+
+
+# Alias pour compatibilite avec le code existant
+SimpleFeatureExtractor = InceptionFeatureExtractor
 
 
 @torch.no_grad()
-def extract_features(images, extractor, batch_size=32, device=None):
+def extract_features(images, extractor, batch_size=8, device=None):
     """
     Extrait les features d'un ensemble d'images.
 
