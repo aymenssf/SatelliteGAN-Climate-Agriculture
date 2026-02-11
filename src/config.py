@@ -50,9 +50,9 @@ AGRICULTURAL_CLASSES = [
 ]
 
 # Taille des images en entree.
-# 64x64 est un compromis entre qualite visuelle et contraintes GPU Colab.
-# EuroSAT est a 64x64 nativement, donc pas de perte d'information.
-IMAGE_SIZE = 64
+# 128x128 pour permettre au modele de diffusion de capturer
+# suffisamment de details en pixel-space.
+IMAGE_SIZE = 128
 
 # Normalisation : valeurs moyennes et ecarts-types approximatifs
 # pour les 3 bandes RGB de Sentinel-2 (estimees sur EuroSAT).
@@ -112,12 +112,9 @@ CYCLEGAN = {
 DIFFUSION = {
     # Nombre de pas de diffusion (T dans le papier).
     # 1000 est la valeur standard du papier DDPM.
-    # Au sampling, on peut utiliser moins de pas (50) pour aller plus vite.
     'n_timesteps': 1000,
 
     # Schedule du bruit. 'linear' est le choix original de Ho et al.
-    # 'cosine' (Nichol & Dhariwal 2021) donne de meilleurs resultats
-    # mais est un peu plus complexe. On reste sur linear pour la simplicite.
     'schedule': 'linear',
 
     # Bornes du schedule lineaire (beta_start, beta_end).
@@ -126,19 +123,19 @@ DIFFUSION = {
     'beta_end': 0.02,
 
     # Architecture U-Net
-    'base_channels': 64,       # Canaux de base du U-Net
-    'channel_mults': (1, 2, 4),  # Multiplicateurs par niveau de resolution
-    'n_res_blocks': 2,           # Blocs residuels par niveau
-    'attention_levels': [2],     # Niveaux ou on ajoute de l'attention (le dernier)
+    # base_channels=128 et 4 niveaux pour capturer les details a 128x128.
+    'base_channels': 128,
+    'channel_mults': (1, 2, 4, 8),
+    'n_res_blocks': 2,
+    'attention_levels': [2, 3],  # Attention aux 2 derniers niveaux
 
     # Entrainement
-    'batch_size': 16,
-    'lr': 2e-4,
+    'batch_size': 8,           # Reduit pour contrainte GPU T4 a 128x128
+    'lr': 1e-4,               # Plus stable que 2e-4
     'n_epochs': 150,
 
-    # Nombre de pas pour le sampling (generation).
-    # 50 pas au lieu de 1000 pour un temps de generation raisonnable.
-    'sampling_steps': 50,
+    # Sampling DDIM : 100 steps suffisent pour une qualite equivalente a 1000 DDPM.
+    'sampling_steps': 100,
 
     # Sauvegarde
     'save_every': 25,
