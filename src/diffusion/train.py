@@ -313,15 +313,19 @@ class DiffusionTrainer:
         print(f"Modele final sauvegarde : {path}")
 
     @torch.no_grad()
-    def generate(self, n_samples=16, image_size=None, use_ema=True, fast=True):
+    def generate(self, n_samples=16, image_size=None, use_ema=True, fast=True,
+                 batch_size=32):
         """
         Genere des images avec le modele entraine.
 
+        Genere par batches pour eviter les OOM sur GPU.
+
         Args:
-            n_samples: nombre d'images a generer
+            n_samples: nombre total d'images a generer
             image_size: taille des images (defaut: IMAGE_SIZE de config)
             use_ema: utiliser les poids EMA (recommande)
             fast: utiliser le sampling DDIM accelere
+            batch_size: taille des batches de generation
 
         Returns:
             tensor (n_samples, 3, H, W) dans [-1, 1]
@@ -332,7 +336,17 @@ class DiffusionTrainer:
         model = self.ema.shadow if use_ema else self.model
         model.eval()
 
-        if fast:
-            return model.sample_fast(n_samples, image_size, DEVICE)
-        else:
-            return model.sample(n_samples, image_size, DEVICE)
+        # Generation par batches pour eviter OOM
+        all_samples = []
+        remaining = n_samples
+        while remaining > 0:
+            bs = min(batch_size, remaining)
+            if fast:
+                batch = model.sample_fast(bs, image_size, DEVICE)
+            else:
+                batch = model.sample(bs, image_size, DEVICE)
+            all_samples.append(batch.cpu())
+            remaining -= bs
+            torch.cuda.empty_cache()
+
+        return torch.cat(all_samples, dim=0)
