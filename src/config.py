@@ -50,9 +50,9 @@ AGRICULTURAL_CLASSES = [
 ]
 
 # Taille des images en entree.
-# 128x128 pour permettre au modele de diffusion de capturer
-# suffisamment de details en pixel-space.
-IMAGE_SIZE = 128
+# 64x64 est un compromis entre qualite visuelle et contraintes GPU Colab.
+# EuroSAT est a 64x64 nativement, donc pas de perte d'information.
+IMAGE_SIZE = 64
 
 # Normalisation : valeurs moyennes et ecarts-types approximatifs
 # pour les 3 bandes RGB de Sentinel-2 (estimees sur EuroSAT).
@@ -122,19 +122,18 @@ DIFFUSION = {
     'beta_start': 1e-4,
     'beta_end': 0.02,
 
-    # Architecture U-Net
-    # base_channels=128 et 4 niveaux pour capturer les details a 128x128.
-    'base_channels': 128,
-    'channel_mults': (1, 2, 4, 8),
+    # Architecture U-Net (compatible checkpoints existants)
+    'base_channels': 64,
+    'channel_mults': (1, 2, 4),
     'n_res_blocks': 2,
-    'attention_levels': [2, 3],  # Attention aux 2 derniers niveaux
+    'attention_levels': [2],
 
     # Entrainement
-    'batch_size': 8,           # Reduit pour contrainte GPU T4 a 128x128
-    'lr': 1e-4,               # Plus stable que 2e-4
+    'batch_size': 16,
+    'lr': 1e-4,               # Reduit (etait 2e-4) pour plus de stabilite
     'n_epochs': 150,
 
-    # Sampling DDIM : 100 steps suffisent pour une qualite equivalente a 1000 DDPM.
+    # Sampling DDIM : 100 steps deterministes ~ 1000 steps DDPM en qualite.
     'sampling_steps': 100,
 
     # Sauvegarde
